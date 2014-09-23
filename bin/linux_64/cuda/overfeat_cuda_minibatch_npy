@@ -1,0 +1,123 @@
+#!/usr/bin/python
+
+from optparse import OptionParser
+import os, string, subprocess, sys, os.path
+
+from glob import glob
+import numpy as np
+import time
+
+MINI_BATCH = 1000
+
+
+def get_folders_recursively(path, type):
+    """
+    Helper function to recursively retrieve all folders containing files of
+    type <type> in a given path.
+    """
+
+    folders = []
+
+    for root, subFolders, files in os.walk(path):
+        for file in files:
+            if file[-len(type):] == type:
+                folders += [os.path.relpath(root, path)]
+                break
+
+    return sorted(folders)
+
+
+file_dir = os.path.dirname(os.path.abspath(__file__))
+
+parser = OptionParser()
+parser.description = "See README.md for more details"
+parser.add_option("-d", "--data_dir", dest="data_dir", action="store", default=None, help="Path to the folder containing the model data")
+parser.add_option("-i", "--input_dir", dest="input_dir", action="store", help="Input directory")
+parser.add_option("-o", "--output_dir", dest="output_dir", action="store", help="output directory")
+parser.add_option("-l", "--large_net", dest="large_net", action="store_true", default=True, help="Use larger but slower network")
+(options, args) = parser.parse_args()
+
+if (options.input_dir == None) or (options.output_dir == None):
+   parser.print_help()
+   sys.exit(0)
+
+net_idx = 1 if options.large_net else 0
+
+weight_file = None
+if (options.data_dir != None) and (not os.path.exists(options.data_dir)):
+   print >> sys.stderr, "Specified path to data (%s) does not exist"%(options.data_dir)
+   sys.exit(0)
+   weight_file = options.data_dir
+   if not os.path.exists(os.path.join(weight_file, "net_weight_%d"%(net_idx))):
+      print >> sys.stderr, "File %s does not exists. Please check the path you specified with option -d"%(weight_file)
+
+if not os.path.exists(options.input_dir):
+    print >> sys.stderr, "Input directory doesn't exist"
+    sys.exit(0)
+if not os.path.exists(options.output_dir):
+    os.mkdir(options.output_dir)
+
+overall_input = []
+folders = get_folders_recursively(options.input_dir, 'jpg')
+
+for folder in folders:
+    fnames = sorted(glob(os.path.join(options.input_dir, folder, '*.jpg')))
+    for fname in fnames:
+      overall_input += [fname.replace(' ', '\ ')]
+
+if options.large_net:
+  input_size = '221x221'
+else:
+  input_size = '231x231'
+
+nfiles = len(overall_input)
+nbatches = np.ceil(nfiles / float(MINI_BATCH))
+
+for bidx, fidx in enumerate(xrange(0, nfiles, MINI_BATCH)):
+  t0 = time.time()
+  toprocess_input = overall_input[fidx:fidx+MINI_BATCH]
+
+  p = subprocess.Popen("convert %s -resize %s^ -gravity center -crop %s+0+0 "
+                       "ppm:- | %s/overfeat_cuda %s %s -p -f" % (
+                       string.join(toprocess_input, " "),
+                       input_size, input_size,
+                       file_dir,
+                       "-l" if options.large_net else "",
+                       "" if weight_file == None else "-d %s"%weight_file),
+                       stderr=sys.stderr, shell=True, stdout = subprocess.PIPE)
+            
+  linetype = 0
+  i = 0
+  filename = ""
+  f_size = 0
+  for line in p.stdout:
+    if linetype == 0:
+      if i >= len(toprocess_input):
+        break
+
+      rel_fname = os.path.relpath(toprocess_input[i], options.input_dir)
+      output_npy_fname = os.path.join(options.output_dir, rel_fname + ".npy")
+      output_dir = os.path.split(output_npy_fname)[0]
+
+      output_npy_fname = output_npy_fname.replace('\ ',' ')
+      output_dir = output_dir.replace('\ ',' ')
+      if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+      linetype = 1
+      i += 1
+
+      f_size = np.prod(np.array(line[:-1].strip().split(' '), dtype=np.int))
+
+    else:
+      linetype = 0
+
+      # -- convert string to float32 numpy array
+      features = np.array(line[:-1].strip().split(' '),
+                          dtype=np.float32).reshape(-1)
+      assert features.size == f_size
+
+      np.save(output_npy_fname, features)
+
+  print 'minibatch %d out of %d took %g seconds to process %d images' % (
+        bidx+1, nbatches, time.time()-t0, len(toprocess_input))

@@ -41,7 +41,7 @@ ntop = int(options.ntop)
 if (options.features_layer != None) or (options.features == True):
    ntop = -1
 #ldpath = "export LD_LIBRARY_PATH=%s:.:%s/src/torch7-distro/installed/lib/:$LD_LIBRARY_PATH;"%(file_dir, file_dir)
-ldpath=""
+ldpath="export LD_LIBRARY_PATH=/opt/OpenBLAS/lib/:$LD_LIBRARY_PATH;"
 
 featurelayer = 19
 if options.large_net == True:
